@@ -68,15 +68,28 @@ test('Settings validate values and lock port only while running', () => {
   assert.throws(() => normalizeSettings({ enableI18n: 'false' }));
   assert.throws(() => normalizeSettings({ enableContextMonitor: 'true' }));
   assert.throws(() => normalizeSettings({ enableProxy: 'true' }));
-  const normalized = normalizeSettings({ port: 7897, enableI18n: false, enableContextMonitor: true });
-  assert.deepEqual(normalized, { port: 7897, enableI18n: false, enableContextMonitor: true, enableProxy: true, targetApp: 'auto', customHubPath: '', customIdePath: '' });
+  assert.throws(() => normalizeSettings({ host: 'invalid space host' }));
+  assert.throws(() => normalizeSettings({ host: 123 }));
+  const normalized = normalizeSettings({ port: 7897, host: '192.168.1.100', enableI18n: false, enableContextMonitor: true });
+  assert.deepEqual(normalized, { port: 7897, host: '192.168.1.100', enableI18n: false, enableContextMonitor: true, enableProxy: true, targetApp: 'auto', customHubPath: '', customIdePath: '' });
+  assert.equal(normalizeSettings({ host: 'http://192.168.31.50:8888/' }).host, '192.168.31.50');
+  assert.equal(normalizeSettings({ proxyHost: 'localhost' }).host, 'localhost');
   assert.throws(() => normalizeSettings({ customHubPath: 123 }));
   assert.throws(() => normalizeSettings({ customIdePath: true }));
   assert.throws(() => assertLaunchSettingsMutable({ customHubPath: 'D:\\custom' }, normalized, 'running'));
   assert.doesNotThrow(() => assertLaunchSettingsMutable({ customHubPath: 'D:\\custom' }, normalized, 'idle'));
   assert.throws(() => assertLaunchSettingsMutable({ enableProxy: false }, normalized, 'running'));
   assert.doesNotThrow(() => assertLaunchSettingsMutable({ enableProxy: false }, normalized, 'idle'));
-test('buildProxyLaunch respects enableProxy=false for direct connection', () => {
+  assert.throws(() => normalizeSettings({ targetApp: 'invalid' }));
+  assert.throws(() => assertLaunchSettingsMutable({ targetApp: 'ide' }, normalized, 'running'));
+  assert.doesNotThrow(() => assertLaunchSettingsMutable({ targetApp: 'ide' }, normalized, 'idle'));
+  assert.throws(() => assertLaunchSettingsMutable({ port: 10808 }, normalized, 'running'));
+  assert.throws(() => assertLaunchSettingsMutable({ host: '10.0.0.1' }, normalized, 'running'));
+  assert.doesNotThrow(() => assertLaunchSettingsMutable({ host: '10.0.0.1' }, normalized, 'idle'));
+  assert.doesNotThrow(() => assertLaunchSettingsMutable({ enableI18n: true, enableContextMonitor: false }, normalized, 'running'));
+});
+
+test('buildProxyLaunch respects enableProxy=false for direct connection and custom host/port', () => {
   const { buildProxyLaunch } = require('../features/proxy');
   const direct = buildProxyLaunch(7890, 9333, { CUSTOM: '1' }, false);
   assert.equal(direct.args.some(a => a.startsWith('--proxy-server')), false);
@@ -85,12 +98,15 @@ test('buildProxyLaunch respects enableProxy=false for direct connection', () => 
   assert.equal(direct.env.HTTP_PROXY, undefined);
   assert.equal(direct.env.ALL_PROXY, undefined);
   assert.equal(direct.env.CUSTOM, '1');
-});
-  assert.throws(() => normalizeSettings({ targetApp: 'invalid' }));
-  assert.throws(() => assertLaunchSettingsMutable({ targetApp: 'ide' }, normalized, 'running'));
-  assert.doesNotThrow(() => assertLaunchSettingsMutable({ targetApp: 'ide' }, normalized, 'idle'));
-  assert.throws(() => assertLaunchSettingsMutable({ port: 10808 }, normalized, 'running'));
-  assert.doesNotThrow(() => assertLaunchSettingsMutable({ enableI18n: true, enableContextMonitor: false }, normalized, 'running'));
+
+  const custom = buildProxyLaunch(10808, 9333, {}, true, '192.168.31.1');
+  assert.ok(custom.args.includes('--proxy-server=http://192.168.31.1:10808'));
+  assert.equal(custom.env.HTTP_PROXY, 'http://192.168.31.1:10808');
+  assert.equal(custom.env.ALL_PROXY, 'http://192.168.31.1:10808');
+
+  const optsLaunch = buildProxyLaunch({ port: 7897, cdpPort: 9333, host: 'proxy.lan', enableProxy: true });
+  assert.ok(optsLaunch.args.includes('--proxy-server=http://proxy.lan:7897'));
+  assert.equal(optsLaunch.env.ALL_PROXY, 'http://proxy.lan:7897');
 });
 
 test('Session supports selecting Antigravity IDE and handles target-specific launch', async () => {

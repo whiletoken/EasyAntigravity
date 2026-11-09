@@ -355,22 +355,27 @@ body {
 .quick-tag:hover .tag-hint {
   opacity: 0.9;
 }
-input[type="number"], input#proxyPortInput {
+input[type="number"], input#proxyPortInput, input#proxyHostInput {
   background: var(--input-bg);
   border: 1px solid var(--card-border);
   color: var(--text-main);
   padding: 5px 8px;
   border-radius: 6px;
-  width: 78px;
   text-align: center;
   font-family: inherit;
   font-weight: 600;
   font-size: 11.5px;
   outline: none;
   transition: border-color 0.2s, background-color 0.2s;
+}
+input[type="number"], input#proxyPortInput {
+  width: 78px;
   -webkit-appearance: none;
   -moz-appearance: textfield;
   appearance: textfield;
+}
+input#proxyHostInput {
+  width: 108px;
 }
 input[type="number"]::-webkit-outer-spin-button,
 input[type="number"]::-webkit-inner-spin-button,
@@ -379,7 +384,7 @@ input#proxyPortInput::-webkit-inner-spin-button {
   -webkit-appearance: none;
   margin: 0;
 }
-input[type="number"]:focus, input#proxyPortInput:focus {
+input[type="number"]:focus, input#proxyPortInput:focus, input#proxyHostInput:focus {
   border-color: var(--primary);
 }
 

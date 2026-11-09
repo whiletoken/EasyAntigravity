@@ -66,7 +66,11 @@ function createApplication({ rootDir, dataDir, native = false, testMode = false,
       const active = session.activeTarget || (desktop.resolveTarget ? desktop.resolveTarget(currentSettings.targetApp, currentSettings) : { id: 'hub', name: 'Antigravity' });
       const bothInstalled = Boolean(allTargets.hub?.exists && allTargets.ide?.exists);
       return {
-        ...currentSettings, ...session.snapshot(), ...cdp.status, ...updater.currentState(),
+        ...currentSettings,
+        proxyHost: currentSettings.host,
+        ...session.snapshot(),
+        ...cdp.status,
+        ...updater.currentState(),
         dictEntries: Object.keys(dictionary).length,
         capabilities: active.capabilities || desktop.capabilities,
         targets: allTargets,
@@ -91,7 +95,14 @@ function createApplication({ rootDir, dataDir, native = false, testMode = false,
       if (next.enableI18n !== previous.enableI18n) events.log('I18N', next.enableI18n ? '汉化已开启' : '汉化已关闭，原文已恢复', 'tag-i18n');
       if (next.enableContextMonitor !== previous.enableContextMonitor) events.log('SYSTEM', next.enableContextMonitor ? '上下文监控已开启（只读）' : '上下文监控已关闭，上下文圆环已移除', 'tag-proxy');
       if (input.enableProxy !== undefined && input.enableProxy !== previous.enableProxy) {
-        events.log('SYSTEM', next.enableProxy ? `免 TUN 代理已开启（127.0.0.1:${next.port}）` : '免 TUN 代理已关闭（直连模式）', 'tag-proxy');
+        const isLoopback = ['127.0.0.1', 'localhost', '::1'].includes(next.host || '127.0.0.1');
+        const proxyLabel = isLoopback ? '免 TUN 本地代理' : '免 TUN 代理';
+        events.log('SYSTEM', next.enableProxy ? `${proxyLabel}已开启（${next.host || '127.0.0.1'}:${next.port}）` : '免 TUN 代理已关闭（直连模式）', 'tag-proxy');
+      }
+      const hostChanged = (input.host !== undefined || input.proxyHost !== undefined) && next.host !== previous.host;
+      const portChanged = input.port !== undefined && Number(input.port) !== previous.port;
+      if (hostChanged || portChanged) {
+        events.log('SYSTEM', `已更新代理目标: ${next.host}:${next.port}`, 'tag-proxy');
       }
       if (input.targetApp !== undefined && input.targetApp !== previous.targetApp) {
         const target = desktop.resolveTarget ? desktop.resolveTarget(next.targetApp, next) : { name: next.targetApp };

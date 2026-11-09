@@ -1,11 +1,24 @@
-function buildProxyLaunch(port, cdpPort, environment = process.env, enableProxy = true) {
+function buildProxyLaunch(portOrOpts, cdpPort, environment = process.env, enableProxy = true, host = '127.0.0.1') {
+  let port;
+  let targetHost;
+  if (typeof portOrOpts === 'object' && portOrOpts !== null && !Array.isArray(portOrOpts)) {
+    port = portOrOpts.port;
+    cdpPort = portOrOpts.cdpPort;
+    environment = portOrOpts.environment || process.env;
+    enableProxy = portOrOpts.enableProxy !== undefined ? portOrOpts.enableProxy : true;
+    targetHost = portOrOpts.host || portOrOpts.proxyHost || '127.0.0.1';
+  } else {
+    port = portOrOpts;
+    targetHost = host || '127.0.0.1';
+  }
   const args = [
     `--remote-debugging-port=${cdpPort}`,
     '--remote-debugging-address=127.0.0.1'
   ];
   const env = { ...environment };
   if (enableProxy) {
-    const proxy = `http://127.0.0.1:${port}`;
+    const proxyHost = String(targetHost).trim() || '127.0.0.1';
+    const proxy = `http://${proxyHost}:${port}`;
     const bypass = 'localhost,127.0.0.1,::1,[::1]';
     args.push(
       `--proxy-server=${proxy}`,

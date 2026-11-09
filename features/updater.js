@@ -81,12 +81,13 @@ function requestDirect(targetUrl, timeoutMs = 10000, redirects = 3) {
   });
 }
 
-function requestViaHttpProxy(targetUrl, proxyPort, timeoutMs = 10000, redirects = 3) {
+function requestViaHttpProxy(targetUrl, proxyPort, timeoutMs = 10000, redirects = 3, proxyHost = '127.0.0.1') {
   return new Promise((resolve, reject) => {
     const parsed = new URL(targetUrl);
+    const host = proxyHost || '127.0.0.1';
     if (parsed.protocol === 'http:') {
       const req = http.request({
-        hostname: '127.0.0.1',
+        hostname: host,
         port: proxyPort,
         method: 'GET',
         path: parsed.toString(),
@@ -96,7 +97,7 @@ function requestViaHttpProxy(targetUrl, proxyPort, timeoutMs = 10000, redirects 
         if ([301, 302, 307, 308].includes(res.statusCode) && res.headers.location && redirects > 0) {
           res.resume();
           try {
-            resolve(await requestViaHttpProxy(new URL(res.headers.location, parsed).toString(), proxyPort, timeoutMs, redirects - 1));
+            resolve(await requestViaHttpProxy(new URL(res.headers.location, parsed).toString(), proxyPort, timeoutMs, redirects - 1, host));
           } catch (err) { reject(err); }
           return;
         }
@@ -108,14 +109,14 @@ function requestViaHttpProxy(targetUrl, proxyPort, timeoutMs = 10000, redirects 
         try { resolve(await readStreamBounded(res)); }
         catch (err) { reject(err); }
       });
-      req.on('timeout', () => req.destroy(new Error('本地代理请求超时')));
+      req.on('timeout', () => req.destroy(new Error('代理请求超时')));
       req.on('error', reject);
       req.end();
       return;
     }
 
     const connectReq = http.request({
-      hostname: '127.0.0.1',
+      hostname: host,
       port: proxyPort,
       method: 'CONNECT',
       path: `${parsed.hostname}:${parsed.port || 443}`,
@@ -140,7 +141,7 @@ function requestViaHttpProxy(targetUrl, proxyPort, timeoutMs = 10000, redirects 
         if ([301, 302, 307, 308].includes(httpsRes.statusCode) && httpsRes.headers.location && redirects > 0) {
           httpsRes.resume();
           try {
-            resolve(await requestViaHttpProxy(new URL(httpsRes.headers.location, parsed).toString(), proxyPort, timeoutMs, redirects - 1));
+            resolve(await requestViaHttpProxy(new URL(httpsRes.headers.location, parsed).toString(), proxyPort, timeoutMs, redirects - 1, host));
           } catch (err) { reject(err); }
           return;
         }
@@ -156,20 +157,20 @@ function requestViaHttpProxy(targetUrl, proxyPort, timeoutMs = 10000, redirects 
       req.on('error', reject);
       req.end();
     });
-    connectReq.on('timeout', () => connectReq.destroy(new Error('连接本地代理端口超时')));
+    connectReq.on('timeout', () => connectReq.destroy(new Error('连接代理端口超时')));
     connectReq.on('error', reject);
     connectReq.end();
   });
 }
 
-async function fetchBuffer(targetUrl, proxyPort) {
+async function fetchBuffer(targetUrl, proxyPort, proxyHost = '127.0.0.1') {
   const parsed = new URL(targetUrl);
   const isLoopback = ['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname);
   if (!isLoopback && Number.isInteger(proxyPort) && proxyPort > 0 && proxyPort <= 65535) {
     try {
-      return await requestViaHttpProxy(targetUrl, proxyPort);
+      return await requestViaHttpProxy(targetUrl, proxyPort, 10000, 3, proxyHost);
     } catch {
-      // Fall back to direct connection if local proxy is not listening yet.
+      // Fall back to direct connection if proxy is not listening yet.
     }
   }
   return requestDirect(targetUrl);
@@ -229,9 +230,11 @@ class Updater {
     if (this.busy) throw new Error('正在检查热更新，请稍候');
     this.busy = true;
     try {
-      const port = this.settings.get().port;
+      const currentSettings = this.settings ? this.settings.get() : {};
+      const port = currentSettings.port;
+      const host = currentSettings.host || '127.0.0.1';
       const url = manifestUrl || process.env.EASYAG_UPDATE_URL || DEFAULT_MANIFEST_URL;
-      const rawManifest = await this.fetchBytes(url, port);
+      const rawManifest = await this.fetchBytes(url, port, host);
       let manifest;
       try { manifest = JSON.parse(rawManifest.toString('utf8')); }
       catch { throw new Error('热更新清单格式无效'); }
@@ -257,7 +260,7 @@ class Updater {
           const currentFile = fs.existsSync(targetFile) ? targetFile : (fs.existsSync(bundledFile) ? bundledFile : null);
           if (currentFile && sha256Hex(fs.readFileSync(currentFile)) === expectedHash) continue;
           const fileUrl = new URL(entry.url, url).toString();
-          const bytes = await this.fetchBytes(fileUrl, port);
+          const bytes = await this.fetchBytes(fileUrl, port, host);
           if (sha256Hex(bytes) !== expectedHash) throw new Error(`词典 ${name} SHA-256 校验未通过，已拒绝写入`);
           const parsedDict = JSON.parse(bytes.toString('utf8'));
           writeJson(targetFile, parsedDict);
@@ -295,7 +298,7 @@ class Updater {
               }
             }
             const fileUrl = new URL(spec.url, url).toString();
-            const bytes = await this.fetchBytes(fileUrl, port);
+            const bytes = await this.fetchBytes(fileUrl, port, host);
             if (sha256Hex(bytes) !== expectedHash) throw new Error(`文件 ${relativePath} SHA-256 校验失败`);
             fs.mkdirSync(path.dirname(destination), { recursive: true });
             fs.writeFileSync(destination, bytes);

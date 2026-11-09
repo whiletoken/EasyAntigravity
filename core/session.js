@@ -53,7 +53,7 @@ class Session {
       if (target.profile && this.cdp) this.cdp.profile = target.profile;
       if (this.cdp) this.cdp.target = target.id;
       this.change('launching');
-      const launch = buildProxyLaunch(settings.port, this.cdp.port, process.env, settings.enableProxy);
+      const launch = buildProxyLaunch(settings.port, this.cdp.port, process.env, settings.enableProxy, settings.host);
       const child = this.spawnProcess(target.appExe, launch.args, {
         env: launch.env, detached: false, stdio: 'ignore', windowsHide: false
       });
@@ -76,7 +76,8 @@ class Session {
       if (target.capabilities?.cdp !== false) {
         this.cdp.start();
       }
-      const netMsg = settings.enableProxy ? `本地代理 127.0.0.1:${settings.port}` : '直连网络';
+      const isLoopback = ['127.0.0.1', 'localhost', '::1'].includes(settings.host || '127.0.0.1');
+      const netMsg = settings.enableProxy ? `${isLoopback ? '本地代理' : '代理'} ${settings.host || '127.0.0.1'}:${settings.port}` : '直连网络';
       const cdpMsg = target.capabilities?.cdp !== false ? '，增强功能正在连接' : '';
       this.events.log('SYSTEM', `${target.name} 已启动（${netMsg}）${cdpMsg}`, 'tag-proxy');
       this.host.hide();

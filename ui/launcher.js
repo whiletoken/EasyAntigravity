@@ -38,18 +38,28 @@ function appendLog(category, message, cls = '', at) {
 function report(error) { appendLog('SYSTEM', error.message || String(error), 'tag-alert'); }
 
 function updateProxyUi(enabled) {
-  const row = element('proxyPortRow');
+  const hostRow = element('proxyHostRow');
+  const portRow = element('proxyPortRow');
   const badge = element('patchStatusBadge');
   const busyOrRunning = ['preparing', 'launching', 'running'].includes(phase);
-  if (row) row.classList.toggle('disabled', !enabled);
+  if (hostRow) hostRow.classList.toggle('disabled', !enabled);
+  if (portRow) portRow.classList.toggle('disabled', !enabled);
+  document.querySelectorAll('[data-host]').forEach(control => {
+    control.disabled = !enabled || busyOrRunning;
+  });
   document.querySelectorAll('[data-port]').forEach(control => {
     control.disabled = !enabled || busyOrRunning;
   });
+  if (element('proxyHostInput')) {
+    element('proxyHostInput').disabled = !enabled || busyOrRunning;
+  }
   if (element('proxyPortInput')) {
     element('proxyPortInput').disabled = !enabled || busyOrRunning;
   }
   if (badge) {
-    badge.textContent = enabled ? '· 本地代理就绪' : '· 直连模式（不挂代理）';
+    const currentHost = element('proxyHostInput')?.value?.trim() || '127.0.0.1';
+    const isLoopback = ['127.0.0.1', 'localhost', '::1'].includes(currentHost);
+    badge.textContent = enabled ? (isLoopback ? '· 本地代理就绪' : `· 代理就绪 (${currentHost})`) : '· 直连模式（不挂代理）';
     badge.style.color = enabled ? 'var(--green)' : 'var(--text-dark)';
   }
 }
@@ -65,8 +75,10 @@ function renderPhase(next, targetName = activeTargetName) {
   if (element('proxyToggle')) element('proxyToggle').disabled = locked;
   document.querySelectorAll('[data-target]').forEach(control => { control.disabled = locked; });
   const proxyEnabled = element('proxyToggle') ? element('proxyToggle').checked : true;
+  document.querySelectorAll('[data-host]').forEach(control => { control.disabled = locked || !proxyEnabled; });
   document.querySelectorAll('[data-port]').forEach(control => { control.disabled = locked || !proxyEnabled; });
-  element('proxyPortInput').disabled = locked || !proxyEnabled;
+  if (element('proxyHostInput')) element('proxyHostInput').disabled = locked || !proxyEnabled;
+  if (element('proxyPortInput')) element('proxyPortInput').disabled = locked || !proxyEnabled;
 
   const currentObj = currentTargets[activeTarget] || {};
   const isMissing = !currentObj.exists && next === 'idle';
@@ -191,6 +203,7 @@ function loadSettings(status) {
   if (status.targets) {
     currentTargets = status.targets;
   }
+  if (element('proxyHostInput')) element('proxyHostInput').value = status.host || status.proxyHost || '127.0.0.1';
   element('proxyPortInput').value = status.port;
   if (element('proxyToggle')) element('proxyToggle').checked = status.enableProxy !== false;
   element('i18nToggle').checked = status.enableI18n;
@@ -200,7 +213,9 @@ function loadSettings(status) {
 }
 
 function persistSettings() {
+  const hostVal = element('proxyHostInput') ? element('proxyHostInput').value.trim() : '127.0.0.1';
   const payload = {
+    host: hostVal || '127.0.0.1',
     port: Number(element('proxyPortInput').value),
     enableProxy: element('proxyToggle') ? element('proxyToggle').checked : true,
     enableI18n: element('i18nToggle').checked,
@@ -380,9 +395,13 @@ document.addEventListener('click', event => {
     }
     return;
   }
-  const control = event.target.closest('[data-action],[data-port]');
+  const control = event.target.closest('[data-action],[data-port],[data-host]');
   if (!control || control.disabled) return;
-  const action = control.dataset.port !== undefined ? async () => {
+  const action = control.dataset.host !== undefined ? async () => {
+    element('proxyHostInput').value = control.dataset.host;
+    updateProxyUi(element('proxyToggle') ? element('proxyToggle').checked : true);
+    await persistSettings();
+  } : control.dataset.port !== undefined ? async () => {
     element('proxyPortInput').value = control.dataset.port;
     await persistSettings();
   } : actions[control.dataset.action];
@@ -415,9 +434,24 @@ element('customPathInput')?.addEventListener('keydown', e => {
 });
 
 element('proxyPortInput').addEventListener('input', event => { event.target.value = event.target.value.replace(/\D/g, ''); });
-for (const id of ['proxyPortInput', 'proxyToggle', 'i18nToggle', 'contextMonitorToggle']) {
+element('proxyHostInput')?.addEventListener('input', () => {
+  updateProxyUi(element('proxyToggle') ? element('proxyToggle').checked : true);
+});
+element('proxyHostInput')?.addEventListener('change', event => {
+  let val = event.target.value.trim();
+  val = val.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, '');
+  val = val.split('/')[0].split('?')[0].split('#')[0];
+  const portMatch = val.match(/^([a-zA-Z0-9.-]+):(\d+)$/);
+  if (portMatch) {
+    val = portMatch[1];
+    if (element('proxyPortInput')) element('proxyPortInput').value = portMatch[2];
+  }
+  if (!val) val = '127.0.0.1';
+  event.target.value = val;
+});
+for (const id of ['proxyHostInput', 'proxyPortInput', 'proxyToggle', 'i18nToggle', 'contextMonitorToggle']) {
   element(id)?.addEventListener('change', () => {
-    if (id === 'proxyToggle') updateProxyUi(element('proxyToggle').checked);
+    if (id === 'proxyToggle' || id === 'proxyHostInput') updateProxyUi(element('proxyToggle')?.checked);
     persistSettings().catch(report);
   });
 }
