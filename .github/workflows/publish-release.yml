@@ -5,25 +5,45 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      bump:
+        description: '自动升级版本类型 (patch, minor, major, none)'
+        required: false
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - none
+      version:
+        description: '指定具体版本号 (例如 4.0.5，留空则根据 bump 自动递增)'
+        required: false
+        default: ''
+        type: string
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  build:
-    uses: ./.github/workflows/tauri-ci.yml
-
-  release:
-    needs: build
+  version:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      edition: ${{ steps.bump.outputs.edition }}
+      tag_name: ${{ steps.bump.outputs.tag_name }}
+      commit_sha: ${{ steps.bump.outputs.commit_sha }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -31,29 +51,103 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
-      - name: Resolve release metadata
-        id: meta
+      - name: Resolve and bump version
+        id: bump
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            node -e "
+              const fs = require('fs');
+              const p = require('./package.json');
+              const ref = process.env.GITHUB_REF_NAME || '';
+              const m = ref.match(/^v?([0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.]+)?)/);
+              const ver = m ? m[1] : p.version;
+              const ed = p.edition || 'lite';
+              const tag = ref || \`v\${ver}-\${ed}\`;
+              console.log(\`Using tagged version: \${ver} (\${tag})\`);
+              if (process.env.GITHUB_OUTPUT) {
+                fs.appendFileSync(process.env.GITHUB_OUTPUT, \`version=\${ver}\nedition=\${ed}\ntag_name=\${tag}\ncommit_sha=\${process.env.GITHUB_SHA}\n\`);
+              }
+            "
+            exit 0
+          fi
+
+          BUMP_TYPE="${{ inputs.bump || 'patch' }}"
+          SPECIFIC_VER="${{ inputs.version || '' }}"
+
+          if [[ "$BUMP_TYPE" != "none" || -n "$SPECIFIC_VER" ]]; then
+            ARGS=""
+            if [[ -n "$SPECIFIC_VER" ]]; then
+              ARGS="--version=$SPECIFIC_VER"
+            else
+              ARGS="--type=$BUMP_TYPE"
+            fi
+            node scripts/bump-version.cjs $ARGS
+
+            NEW_VER=$(node -p "require('./package.json').version")
+            EDITION=$(node -p "require('./package.json').edition || 'lite'")
+            TAG="v${NEW_VER}-${EDITION}"
+
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/tauri.conf.json index.html update-manifest.json
+            git commit -m "chore(release): ${TAG} [skip ci]"
+            git tag "${TAG}"
+            TARGET_BRANCH="${GITHUB_REF_NAME:-main}"
+            git push origin "HEAD:${TARGET_BRANCH}"
+            git push origin "${TAG}"
+
+            SHA=$(git rev-parse HEAD)
+            echo "version=${NEW_VER}" >> "$GITHUB_OUTPUT"
+            echo "edition=${EDITION}" >> "$GITHUB_OUTPUT"
+            echo "tag_name=${TAG}" >> "$GITHUB_OUTPUT"
+            echo "commit_sha=${SHA}" >> "$GITHUB_OUTPUT"
+          else
+            node -e "
+              const fs = require('fs');
+              const p = require('./package.json');
+              const tag = \`v\${p.version}-\${p.edition || 'lite'}\`;
+              console.log(\`Using existing package version: \${p.version} (\${tag})\`);
+              if (process.env.GITHUB_OUTPUT) {
+                fs.appendFileSync(process.env.GITHUB_OUTPUT, \`version=\${p.version}\nedition=\${p.edition || 'lite'}\ntag_name=\${tag}\ncommit_sha=\${process.env.GITHUB_SHA}\n\`);
+              }
+            "
+          fi
+
+  build:
+    needs: version
+    uses: ./.github/workflows/tauri-ci.yml
+    with:
+      ref: ${{ needs.version.outputs.tag_name || needs.version.outputs.commit_sha }}
+
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag_name || needs.version.outputs.commit_sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Resolve release notes
+        id: notes
         run: |
           node -e "
             const fs = require('fs');
-            const p = require('./package.json');
-            if (!p.version || !p.edition) {
-              console.error('Invalid package.json: version and edition are required');
-              process.exit(1);
-            }
-            const expectedTag = \`v\${p.version}-\${p.edition}\`;
-            const refName = process.env.GITHUB_REF_NAME || '';
-            const tagName = refName || expectedTag;
-            const notesFile = \`docs/RELEASE-v\${p.version}.md\`;
+            const ver = '${{ needs.version.outputs.version }}';
+            const notesFile = \`docs/RELEASE-v\${ver}.md\`;
             const bodyPath = fs.existsSync(notesFile) ? notesFile : (fs.existsSync('CHANGELOG.md') ? 'CHANGELOG.md' : '');
-            const title = \`EasyAG \${tagName}\`;
-
-            console.log(\`Resolved Tag: \${tagName}\`);
-            console.log(\`Resolved Title: \${title}\`);
-            console.log(\`Resolved Notes: \${bodyPath}\`);
-
             if (process.env.GITHUB_OUTPUT) {
-              fs.appendFileSync(process.env.GITHUB_OUTPUT, \`version=\${p.version}\\nedition=\${p.edition}\\ntag_name=\${tagName}\\ntitle=\${title}\\nbody_path=\${bodyPath}\\n\`);
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, \`body_path=\${bodyPath}\n\`);
             }
           "
 
@@ -82,13 +176,14 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.meta.outputs.tag_name }}
-          target_commitish: ${{ github.sha }}
-          name: ${{ steps.meta.outputs.title }}
+          tag_name: ${{ needs.version.outputs.tag_name }}
+          target_commitish: ${{ needs.version.outputs.commit_sha }}
+          name: EasyAG ${{ needs.version.outputs.tag_name }}
           make_latest: true
           overwrite_files: true
           fail_on_unmatched_files: true
-          body_path: ${{ steps.meta.outputs.body_path }}
+          body_path: ${{ steps.notes.outputs.body_path }}
           files: |
             release-out/*.zip
             release-out/*.sha256
+            update-manifest.json

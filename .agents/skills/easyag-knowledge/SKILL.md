@@ -126,6 +126,7 @@ description: >-
 - `backend-resources.cjs`：定义打进分发包中的白名单文件与目录列表。
 - `check.cjs`：语法与模块依赖静态健康检查。
 - `build-update-manifest.cjs`：计算词典与文件的 SHA-256 并更新热更新清单。
+- `bump-version.cjs`：**原子化版本升级脚本**。同步更新 `package.json`、`package-lock.json`、`tauri.conf.json`、`Cargo.toml`、`index.html` 并重新生成 `update-manifest.json`，支持 patch/minor/major 及 GitHub Actions 打包自动提版。
 
 ---
 

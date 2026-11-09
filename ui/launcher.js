@@ -259,14 +259,25 @@ async function checkUpdate() {
   if (actionLabel) actionLabel.textContent = '↻ 检查中…';
   try {
     const result = await api.checkUpdate();
-    appendLog('SYSTEM', result.message || '检查更新完成', result.updated ? 'tag-proxy' : 'tag-aa');
+    appendLog('SYSTEM', result.message || '检查更新完成', result.updated ? 'tag-proxy' : 'tag-aa', result.at);
     if (result.status) renderStatus(result.status);
-    if (actionLabel) actionLabel.textContent = result.updated ? '✓ 已更新' : '↻ 检查更新';
+    if (actionLabel) {
+      if (result.updated) {
+        actionLabel.textContent = result.restartRequired ? '✓ 已更新(需重启)' : '✓ 已更新';
+      } else {
+        actionLabel.textContent = '✓ 已是最新';
+      }
+    }
   } catch (error) {
     report(error);
     if (actionLabel) actionLabel.textContent = '↻ 重试';
   } finally {
-    setTimeout(() => { if (btn) btn.disabled = false; }, 1200);
+    setTimeout(() => {
+      if (btn) btn.disabled = false;
+      if (actionLabel && !actionLabel.textContent.includes('重试')) {
+        actionLabel.textContent = '↻ 检查更新';
+      }
+    }, 1500);
   }
 }
 

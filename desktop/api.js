@@ -106,7 +106,7 @@ function createApi(app) {
       if (method === 'POST' && route === '/api/update') {
         const data = await readBody(request);
         const result = await app.updater.checkAndApply({ manifestUrl: data.manifestUrl });
-        return json(response, result);
+        return json(response, { ...result, status: app.status() });
       }
       if (method === 'POST' && route === '/api/theme') {
         const data = await readBody(request);

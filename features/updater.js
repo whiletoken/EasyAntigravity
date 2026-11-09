@@ -7,7 +7,10 @@ const { createHash } = require('node:crypto');
 const { readJson, writeJson } = require('../core/storage');
 const { DICT_FILES } = require('./i18n');
 
-const DEFAULT_MANIFEST_URL = 'https://raw.githubusercontent.com/DSDS-CMHL/EasyAntigravity/main/update-manifest.json';
+const DEFAULT_MANIFEST_URL = 'https://raw.githubusercontent.com/whiletoken/EasyAntigravity/main/update-manifest.json';
+const FALLBACK_MANIFEST_URLS = [
+  'https://cdn.jsdelivr.net/gh/whiletoken/EasyAntigravity@main/update-manifest.json'
+];
 const MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024;
 const ALLOWED_RUNTIME_PREFIXES = ['core/', 'features/', 'adapters/', 'desktop/', 'ui/', 'dicts/'];
 const ALLOWED_RUNTIME_ROOT_FILES = new Set(['server.js', 'index.html']);
@@ -128,7 +131,9 @@ function requestViaHttpProxy(targetUrl, proxyPort, timeoutMs = 10000, redirects 
         reject(new Error(`代理隧道握手失败 (${res.statusCode})`));
         return;
       }
+      socket.on('error', reject);
       const tlsSocket = tls.connect({ socket, servername: parsed.hostname });
+      tlsSocket.on('error', reject);
       const req = https.request({
         hostname: parsed.hostname,
         port: parsed.port || 443,
@@ -231,10 +236,30 @@ class Updater {
     this.busy = true;
     try {
       const currentSettings = this.settings ? this.settings.get() : {};
-      const port = currentSettings.port;
+      const useProxy = currentSettings.enableProxy !== false;
+      const port = useProxy ? currentSettings.port : undefined;
       const host = currentSettings.host || '127.0.0.1';
       const url = manifestUrl || process.env.EASYAG_UPDATE_URL || DEFAULT_MANIFEST_URL;
-      const rawManifest = await this.fetchBytes(url, port, host);
+      let rawManifest;
+      let effectiveUrl = url;
+      try {
+        rawManifest = await this.fetchBytes(url, port, host);
+      } catch (err) {
+        if (!manifestUrl && !process.env.EASYAG_UPDATE_URL) {
+          let fallbackLoaded = false;
+          for (const fallbackUrl of FALLBACK_MANIFEST_URLS) {
+            try {
+              rawManifest = await this.fetchBytes(fallbackUrl, port, host);
+              effectiveUrl = fallbackUrl;
+              fallbackLoaded = true;
+              break;
+            } catch {}
+          }
+          if (!fallbackLoaded) throw err;
+        } else {
+          throw err;
+        }
+      }
       let manifest;
       try { manifest = JSON.parse(rawManifest.toString('utf8')); }
       catch { throw new Error('热更新清单格式无效'); }
@@ -246,21 +271,36 @@ class Updater {
       let dictsUpdated = 0;
       let runtimeFilesUpdated = 0;
 
+      const fetchAsset = async relativeOrAbsolute => {
+        const fileUrl = new URL(relativeOrAbsolute, effectiveUrl).toString();
+        try {
+          return await this.fetchBytes(fileUrl, port, host);
+        } catch (err) {
+          if (fileUrl.includes('raw.githubusercontent.com/whiletoken/EasyAntigravity/')) {
+            const fallback = fileUrl.replace(
+              /https:\/\/raw\.githubusercontent\.com\/whiletoken\/EasyAntigravity\/[^/]+\//,
+              'https://cdn.jsdelivr.net/gh/whiletoken/EasyAntigravity@main/'
+            );
+            return await this.fetchBytes(fallback, port, host);
+          }
+          throw err;
+        }
+      };
+
       // 1. Dictionary hot-update (zero-restart, live CDP reload)
       if (manifest.dicts && typeof manifest.dicts === 'object') {
         const dictDir = path.join(this.dataDir, 'hotfix', 'dicts');
         fs.mkdirSync(dictDir, { recursive: true });
         for (const name of DICT_FILES) {
           const entry = manifest.dicts[name];
-          if (!entry || typeof entry.url !== 'string' || typeof entry.sha256 !== 'string') continue;
+          if (!entry || (typeof entry.url !== 'string' && typeof entry.url !== 'undefined') || typeof entry.sha256 !== 'string') continue;
           const expectedHash = entry.sha256.trim().toLowerCase();
           if (!/^[0-9a-f]{64}$/.test(expectedHash)) throw new Error(`词典 ${name} 校验摘要格式无效`);
           const targetFile = path.join(dictDir, name);
           const bundledFile = path.join(this.rootDir, 'dicts', name);
           const currentFile = fs.existsSync(targetFile) ? targetFile : (fs.existsSync(bundledFile) ? bundledFile : null);
           if (currentFile && sha256Hex(fs.readFileSync(currentFile)) === expectedHash) continue;
-          const fileUrl = new URL(entry.url, url).toString();
-          const bytes = await this.fetchBytes(fileUrl, port, host);
+          const bytes = await fetchAsset(entry.url || ('dicts/' + name));
           if (sha256Hex(bytes) !== expectedHash) throw new Error(`词典 ${name} SHA-256 校验未通过，已拒绝写入`);
           const parsedDict = JSON.parse(bytes.toString('utf8'));
           writeJson(targetFile, parsedDict);
@@ -285,7 +325,7 @@ class Updater {
           }
           for (const [relativePath, spec] of Object.entries(manifest.runtime.files)) {
             if (!isAllowedRuntimePath(relativePath)) throw new Error(`不允许热更新路径: ${relativePath}`);
-            if (!spec || typeof spec.url !== 'string' || typeof spec.sha256 !== 'string') throw new Error(`热更新文件配置缺失: ${relativePath}`);
+            if (!spec || (typeof spec.url !== 'string' && typeof spec.url !== 'undefined') || typeof spec.sha256 !== 'string') throw new Error(`热更新文件配置缺失: ${relativePath}`);
             const expectedHash = spec.sha256.trim().toLowerCase();
             if (!/^[0-9a-f]{64}$/.test(expectedHash)) throw new Error(`文件 ${relativePath} 校验摘要格式无效`);
             const destination = path.resolve(stagingDir, relativePath);
@@ -297,8 +337,7 @@ class Updater {
                 continue;
               }
             }
-            const fileUrl = new URL(spec.url, url).toString();
-            const bytes = await this.fetchBytes(fileUrl, port, host);
+            const bytes = await fetchAsset(spec.url || relativePath);
             if (sha256Hex(bytes) !== expectedHash) throw new Error(`文件 ${relativePath} SHA-256 校验失败`);
             fs.mkdirSync(path.dirname(destination), { recursive: true });
             fs.writeFileSync(destination, bytes);
@@ -336,19 +375,22 @@ class Updater {
         dictEntries = await this.onDictionaryUpdated();
       }
 
+      const current = this.currentState();
+      const message = (dictsUpdated > 0 || runtimeFilesUpdated > 0)
+        ? `热更新完成：更新 ${dictsUpdated} 个词典文件、${runtimeFilesUpdated} 个内核模块${restartRequired ? '（内核更新将在下次启动生效）' : '（词典已即时生效）'}`
+        : `已是最新版本（v${current.version} · 词典 ${current.dictVersion}）`;
+      const logItem = this.events?.log?.('SYSTEM', message, (dictsUpdated > 0 || runtimeFilesUpdated > 0) ? 'tag-proxy' : 'tag-aa');
+
       const summary = {
         ok: true,
         updated: dictsUpdated > 0 || runtimeFilesUpdated > 0,
         dictsUpdated,
         runtimeFilesUpdated,
         dictEntries,
-        ...this.currentState()
+        message,
+        at: logItem?.at || new Date().toISOString(),
+        ...current
       };
-      if (dictsUpdated > 0 || runtimeFilesUpdated > 0) {
-        this.events.log('SYSTEM', `热更新完成：更新 ${dictsUpdated} 个词典文件、${runtimeFilesUpdated} 个内核模块${restartRequired ? '（内核更新将在下次启动生效）' : '（词典已即时生效）'}`, 'tag-proxy');
-      } else {
-        this.events.log('SYSTEM', `已是最新版本（v${summary.version} · 词典 ${summary.dictVersion}）`, 'tag-proxy');
-      }
       return summary;
     } finally {
       this.busy = false;
