@@ -3,14 +3,14 @@ name: Publish Release
 on:
   push:
     tags:
-      - 'v4.0.4-lite'
+      - 'v*'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-4.0.4-lite
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -24,41 +24,71 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - name: Verify release version
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Resolve release metadata
+        id: meta
         run: |
-          node -e "const p=require('./package.json');if(p.version!=='4.0.4'||p.edition!=='lite')process.exit(1)"
-      - uses: actions/download-artifact@v4
+          node -e "
+            const fs = require('fs');
+            const p = require('./package.json');
+            if (!p.version || !p.edition) {
+              console.error('Invalid package.json: version and edition are required');
+              process.exit(1);
+            }
+            const expectedTag = \`v\${p.version}-\${p.edition}\`;
+            const refName = process.env.GITHUB_REF_NAME || '';
+            const tagName = refName || expectedTag;
+            const notesFile = \`docs/RELEASE-v\${p.version}.md\`;
+            const bodyPath = fs.existsSync(notesFile) ? notesFile : (fs.existsSync('CHANGELOG.md') ? 'CHANGELOG.md' : '');
+            const title = \`EasyAG \${tagName}\`;
+
+            console.log(\`Resolved Tag: \${tagName}\`);
+            console.log(\`Resolved Title: \${title}\`);
+            console.log(\`Resolved Notes: \${bodyPath}\`);
+
+            if (process.env.GITHUB_OUTPUT) {
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, \`version=\${p.version}\\nedition=\${p.edition}\\ntag_name=\${tagName}\\ntitle=\${title}\\nbody_path=\${bodyPath}\\n\`);
+            }
+          "
+
+      - name: Download all release artifacts
+        uses: actions/download-artifact@v4
         with:
-          name: EasyAntigravity-4.0.4-lite-windows-x64
+          pattern: 'EasyAntigravity-*'
           path: release-out
-      - uses: actions/download-artifact@v4
-        with:
-          name: EasyAntigravity-4.0.4-lite-macos-arm64-beta
-          path: release-out
-      - uses: actions/download-artifact@v4
-        with:
-          name: EasyAntigravity-4.0.4-lite-macos-x64-beta
-          path: release-out
-      - name: Verify packages and generate SHA256
+          merge-multiple: true
+
+      - name: Verify release packages and compute SHA-256
         shell: bash
         run: |
           set -euo pipefail
           cd release-out
-          test "$(find . -maxdepth 1 -name '*.zip' | wc -l)" -eq 3
+          zip_count=$(find . -maxdepth 1 -name '*.zip' | wc -l)
+          echo "Found $zip_count ZIP release packages"
+          test "$zip_count" -ge 3
           for f in *.zip; do
+            echo "Verifying integrity: $f"
             unzip -t "$f"
             sha256sum "$f" > "SHA256-${f}.sha256"
           done
-      - name: Publish EasyAG 4.0.4 Lite
+          ls -lh
+
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v4.0.4-lite
+          tag_name: ${{ steps.meta.outputs.tag_name }}
           target_commitish: ${{ github.sha }}
-          name: EasyAG v4.0.4 Lite · 新增 IDE 支持
+          name: ${{ steps.meta.outputs.title }}
           make_latest: true
           overwrite_files: true
           fail_on_unmatched_files: true
-          body_path: docs/RELEASE-v4.0.4.md
+          body_path: ${{ steps.meta.outputs.body_path }}
           files: |
             release-out/*.zip
             release-out/*.sha256

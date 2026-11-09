@@ -45,6 +45,7 @@ npm ci
 npm start
 npm run check
 npm test
+npm run package    # 跨平台自动打包编译，产物位于 dist-tauri/
 ```
 
 浏览器交互回归使用独立测试页面和模拟接口，不会启动真实 Antigravity：
